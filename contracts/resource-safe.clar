@@ -512,6 +512,62 @@
   )
 )
 
+;; ===================================================================
+;; Security Monitoring Functions
+;; ===================================================================
 
+;; Flag suspicious trust activity
+(define-public (flag-suspicious-trust (trust-id uint) (reason (string-ascii 20)))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
 
+    ;; Only admin or the recipient can flag trusts
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (recipient (get recipient trust))
+      )
+      (asserts! (or (is-eq tx-sender ADMIN) (is-eq tx-sender recipient)) ERR_UNAUTHORIZED)
 
+      ;; Update trust status
+      (map-set TrustVaults
+        { trust-id: trust-id }
+        (merge trust { status: "flagged" })
+      )
+
+      (ok true)
+    )
+  )
+)
+
+;; ===================================================================
+;; Community Oversight Functions
+;; ===================================================================
+
+;; Submit trust audit with findings
+(define-public (submit-trust-audit 
+                (trust-id uint)
+                (findings (string-ascii 200)))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+      )
+      ;; Check for existing audit
+      (match (map-get? TrustAudits { trust-id: trust-id })
+        existing-audit (asserts! false ERR_AUDIT_EXISTS)
+        true
+      )
+
+      ;; Transfer audit deposit
+      (match (stx-transfer? AUDIT_DEPOSIT tx-sender (as-contract tx-sender))
+        success
+          (begin
+            (ok true)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
