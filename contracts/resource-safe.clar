@@ -284,3 +284,78 @@
     )
   )
 )
+
+;; Cancel an active trust - grantor-only operation
+(define-public (cancel-trust (trust-id uint))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (grantor (get grantor trust))
+        (amount (get amount trust))
+        (verified-count (get verified-milestones trust))
+        (remaining-amount (- amount (* (/ amount (len (get milestones trust))) verified-count)))
+      )
+      (asserts! (is-eq tx-sender grantor) ERR_UNAUTHORIZED)
+      (asserts! (< block-height (get terminates-at trust)) ERR_TRUST_EXPIRED)
+      (asserts! (is-eq (get status trust) "active") ERR_FUNDS_ALREADY_RELEASED)
+      (match (stx-transfer? remaining-amount (as-contract tx-sender) grantor)
+        success
+          (begin
+            (map-set TrustVaults
+              { trust-id: trust-id }
+              (merge trust { status: "cancelled" })
+            )
+            (ok true)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
+
+;; ===================================================================
+;; Advanced Trust Management Functions
+;; ===================================================================
+
+;; Create multi-recipient trust with percentage-based allocation
+(define-public (create-split-trust (beneficiaries (list 5 { recipient: principal, share: uint })) (amount uint))
+  (begin
+    (asserts! (> amount u0) ERR_AMOUNT_INVALID)
+    (asserts! (> (len beneficiaries) u0) ERR_TRUST_ID_INVALID)
+    (asserts! (<= (len beneficiaries) RECIPIENT_LIMIT) ERR_TOO_MANY_RECIPIENTS)
+
+    ;; Validate share distribution totals 100%
+    (let
+      (
+        (total-shares (fold + (map calculate-share beneficiaries) u0))
+      )
+      (asserts! (is-eq total-shares u100) ERR_DISTRIBUTION_INVALID)
+
+      ;; Process the asset transfer and create trust
+      (match (stx-transfer? amount tx-sender (as-contract tx-sender))
+        success
+          (let
+            (
+              (group-id (+ (var-get current-group-trust-id) u1))
+            )
+            (map-set MultiRecipientTrusts
+              { group-trust-id: group-id }
+              {
+                grantor: tx-sender,
+                beneficiaries: beneficiaries,
+                total-amount: amount,
+                created-at: block-height,
+                status: "active"
+              }
+            )
+            (var-set current-group-trust-id group-id)
+            (ok group-id)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
+
