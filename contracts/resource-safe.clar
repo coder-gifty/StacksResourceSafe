@@ -359,3 +359,77 @@
   )
 )
 
+
+;; ===================================================================
+;; Administrative Functions
+;; ===================================================================
+
+;; Set platform operational status
+(define-public (set-platform-status (new-status bool))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN) ERR_UNAUTHORIZED)
+    (ok new-status)
+  )
+)
+
+;; Query recipient verification status
+(define-read-only (is-recipient-approved (recipient principal))
+  (default-to false (get approved (map-get? ApprovedRecipients { recipient: recipient })))
+)
+
+;; ===================================================================
+;; Enhanced Trust Management Functions
+;; ===================================================================
+
+;; Extend trust duration
+(define-public (extend-trust-duration (trust-id uint) (extension-blocks uint))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (asserts! (<= extension-blocks EXTENSION_LIMIT) ERR_AMOUNT_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (grantor (get grantor trust))
+        (current-termination (get terminates-at trust))
+      )
+      (asserts! (is-eq tx-sender grantor) ERR_UNAUTHORIZED)
+      (asserts! (< block-height current-termination) ERR_ALREADY_EXPIRED)
+      (map-set TrustVaults
+        { trust-id: trust-id }
+        (merge trust { terminates-at: (+ current-termination extension-blocks) })
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Increase trust amount
+(define-public (increase-trust-amount (trust-id uint) (additional-amount uint))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (asserts! (> additional-amount u0) ERR_AMOUNT_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (grantor (get grantor trust))
+        (current-amount (get amount trust))
+      )
+      (asserts! (is-eq tx-sender grantor) ERR_UNAUTHORIZED)
+      (asserts! (< block-height (get terminates-at trust)) ERR_TRUST_EXPIRED)
+      (match (stx-transfer? additional-amount tx-sender (as-contract tx-sender))
+        success
+          (begin
+            (map-set TrustVaults
+              { trust-id: trust-id }
+              (merge trust { amount: (+ current-amount additional-amount) })
+            )
+            (ok true)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
+
+
+
