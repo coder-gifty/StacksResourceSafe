@@ -571,3 +571,105 @@
     )
   )
 )
+
+
+;; Resolve trust audit findings
+(define-public (resolve-trust-audit (trust-id uint) (findings-valid bool))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN) ERR_UNAUTHORIZED)
+    (let
+      (
+        (audit (unwrap! 
+          (map-get? TrustAudits { trust-id: trust-id }) 
+          ERR_ITEM_NOT_FOUND))
+        (submission-time (get submission-time audit))
+      )
+      (asserts! (not (get completed audit)) ERR_UNAUTHORIZED)
+      (asserts! (< (- block-height submission-time) AUDIT_TIMEFRAME) ERR_AUDIT_PERIOD_CLOSED)
+
+      ;; Process audit results
+      (if findings-valid
+        ;; Valid findings - return deposit and take action
+        (begin
+          (match (stx-transfer? (get deposit-amount audit) (as-contract tx-sender) (get auditor audit))
+            success 
+              (begin
+                (ok true)
+              )
+            error ERR_TRANSFER_UNSUCCESSFUL
+          )
+        )
+        ;; Invalid findings - forfeit deposit
+        (begin
+          (match (stx-transfer? (get deposit-amount audit) (as-contract tx-sender) ADMIN)
+            success 
+              (begin
+                (ok true)
+              )
+            error ERR_TRANSFER_UNSUCCESSFUL
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ===================================================================
+;; Emergency Recovery Functions
+;; ===================================================================
+
+;; Request emergency asset recovery
+(define-public (request-asset-recovery (trust-id uint) (reason (string-ascii 100)))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (grantor (get grantor trust))
+        (amount (get amount trust))
+        (verified-count (get verified-milestones trust))
+        (remaining-amount (- amount (* (/ amount (len (get milestones trust))) verified-count)))
+        (recovery-request (default-to 
+                            { admin-approved: false, grantor-approved: false, reason: reason }
+                            (map-get? AssetRecoveryRequests { trust-id: trust-id })))
+      )
+      (asserts! (or (is-eq tx-sender ADMIN) (is-eq tx-sender grantor)) ERR_UNAUTHORIZED)
+      (asserts! (not (is-eq (get status trust) "reverted")) ERR_FUNDS_ALREADY_RELEASED)
+      (asserts! (not (is-eq (get status trust) "recovered")) ERR_FUNDS_ALREADY_RELEASED)
+
+      ;; Update approval based on requester
+      (if (is-eq tx-sender ADMIN)
+        (map-set AssetRecoveryRequests
+          { trust-id: trust-id }
+          (merge recovery-request { admin-approved: true, reason: reason })
+        )
+        (map-set AssetRecoveryRequests
+          { trust-id: trust-id }
+          (merge recovery-request { grantor-approved: true, reason: reason })
+        )
+      )
+
+      ;; Check if both approved and process recovery
+      (let
+        (
+          (updated-request (unwrap! (map-get? AssetRecoveryRequests { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        )
+        (if (and (get admin-approved updated-request) (get grantor-approved updated-request))
+          (match (stx-transfer? remaining-amount (as-contract tx-sender) grantor)
+            success
+              (begin
+                (map-set TrustVaults
+                  { trust-id: trust-id }
+                  (merge trust { status: "recovered" })
+                )
+                (ok true)
+              )
+            error ERR_TRANSFER_UNSUCCESSFUL
+          )
+          (ok false)
+        )
+      )
+    )
+  )
+)
+
