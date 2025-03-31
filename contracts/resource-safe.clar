@@ -431,5 +431,87 @@
   )
 )
 
+;; ===================================================================
+;; Security and Rate-limiting Functions
+;; ===================================================================
+
+;; Rate-limited trust creation with abuse prevention
+(define-public (secure-trust-creation (recipient principal) (amount uint) (milestones (list 5 uint)))
+  (let
+    (
+      (grantor-activity (default-to 
+                        { last-trust-block: u0, trusts-in-period: u0 }
+                        (map-get? GrantorActivityTracker { grantor: tx-sender })))
+      (last-block (get last-trust-block grantor-activity))
+      (period-count (get trusts-in-period grantor-activity))
+      (new-period (> (- block-height last-block) RATE_PERIOD))
+      (updated-count (if new-period u1 (+ period-count u1)))
+    )
+    ;; Rate limit check
+    (asserts! (or new-period (< period-count MAX_TRUSTS_PER_PERIOD)) ERR_RATE_EXCEEDED)
+
+    ;; Check for suspicious high-value transactions
+    (if (> amount SUSPICIOUS_AMOUNT_THRESHOLD)
+      (if (>= period-count SUSPICIOUS_RATE_THRESHOLD)
+        (asserts! false ERR_SUSPICIOUS_PATTERN)
+        true
+      )
+      true
+    )
+
+    ;; Update tracking
+    (map-set GrantorActivityTracker
+      { grantor: tx-sender }
+      {
+        last-trust-block: block-height,
+        trusts-in-period: updated-count
+      }
+    )
+
+    ;; Proceed with enhanced verification
+    (protected-trust-creation recipient amount milestones)
+  )
+)
+
+;; Enhanced security trust creation
+(define-public (protected-trust-creation (recipient principal) (amount uint) (milestones (list 5 uint)))
+  (begin
+    (asserts! (not (var-get platform-frozen)) ERR_UNAUTHORIZED)
+    (asserts! (is-recipient-approved recipient) ERR_UNAUTHORIZED)
+    (asserts! (> amount u0) ERR_AMOUNT_INVALID)
+    (asserts! (is-recipient-valid recipient) ERR_MILESTONE_INVALID)
+    (asserts! (> (len milestones) u0) ERR_MILESTONE_INVALID)
+
+    (let
+      (
+        (trust-id (+ (var-get current-trust-id) u1))
+        (termination-time (+ block-height TRUST_DURATION))
+      )
+      (match (stx-transfer? amount tx-sender (as-contract tx-sender))
+        success
+          (begin
+            (map-set TrustVaults
+              { trust-id: trust-id }
+              {
+                grantor: tx-sender,
+                recipient: recipient,
+                amount: amount,
+                status: "active",
+                created-at: block-height,
+                terminates-at: termination-time,
+                milestones: milestones,
+                verified-milestones: u0
+              }
+            )
+            (var-set current-trust-id trust-id)
+            (ok trust-id)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
+
+
 
 
