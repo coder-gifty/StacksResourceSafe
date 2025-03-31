@@ -196,3 +196,91 @@
     )
   )
 )
+
+;; ===================================================================
+;; Batch Processing Functions
+;; ===================================================================
+
+;; Verify multiple milestones in batch
+(define-public (batch-verify-milestones (trust-ids (list 10 uint)))
+  (begin
+    (asserts! (is-eq tx-sender ADMIN) ERR_UNAUTHORIZED)
+    (let
+      (
+        (result (fold process-milestone-batch trust-ids (ok true)))
+      )
+      result
+    )
+  )
+)
+
+;; Helper for batch operations
+(define-private (process-milestone-batch (trust-id uint) (prev-result (response bool uint)))
+  (begin
+    (match prev-result
+      success
+        (match (verify-milestone trust-id)
+          inner-success (ok true)
+          inner-error (err inner-error)
+        )
+      error (err error)
+    )
+  )
+)
+
+;; Verify milestone completion and release proportional funds
+(define-public (verify-milestone (trust-id uint))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (milestones (get milestones trust))
+        (verified-count (get verified-milestones trust))
+        (recipient (get recipient trust))
+        (total-amount (get amount trust))
+        (release-amount (/ total-amount (len milestones)))
+      )
+      (asserts! (< verified-count (len milestones)) ERR_FUNDS_ALREADY_RELEASED)
+      (asserts! (is-eq tx-sender ADMIN) ERR_UNAUTHORIZED)
+      (match (stx-transfer? release-amount (as-contract tx-sender) recipient)
+        success
+          (begin
+            (map-set TrustVaults
+              { trust-id: trust-id }
+              (merge trust { verified-milestones: (+ verified-count u1) })
+            )
+            (ok true)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
+
+;; Revert trust assets to grantor after expiration
+(define-public (revert-assets (trust-id uint))
+  (begin
+    (asserts! (is-trust-id-valid trust-id) ERR_TRUST_ID_INVALID)
+    (let
+      (
+        (trust (unwrap! (map-get? TrustVaults { trust-id: trust-id }) ERR_ITEM_NOT_FOUND))
+        (grantor (get grantor trust))
+        (amount (get amount trust))
+      )
+      (asserts! (is-eq tx-sender ADMIN) ERR_UNAUTHORIZED)
+      (asserts! (> block-height (get terminates-at trust)) ERR_TRUST_EXPIRED)
+      (match (stx-transfer? amount (as-contract tx-sender) grantor)
+        success
+          (begin
+            (map-set TrustVaults
+              { trust-id: trust-id }
+              (merge trust { status: "reverted" })
+            )
+            (ok true)
+          )
+        error ERR_TRANSFER_UNSUCCESSFUL
+      )
+    )
+  )
+)
